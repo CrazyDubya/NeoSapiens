@@ -53,11 +53,11 @@ from neo_sapiens.tools_preset import (
 load_dotenv()
 
 # Initialize SwarmNetwork only if available
-if SwarmNetwork:
+if SwarmNetwork and callable(SwarmNetwork):
     network = SwarmNetwork(api_enabled=True, logging_enabled=True)
 else:
     network = None
-    print("Warning: SwarmNetwork not available - agent pooling disabled")
+    print("Warning: SwarmNetwork not available or not callable - agent pooling disabled")
 
 
 # def tool_router(tool: str, *args, **kwargs):
