@@ -331,8 +331,8 @@ def send_task_to_network_agent(name: str, task: str):
     logger.info(f"Adding agent {name} as a tool")
     agent_id = find_agent_id_by_name(name)
     if agent_id:
-        out = network.run_single_agent(agent_id, task)
-        return out
+            out = network.run_single_agent(agent_id, task)
+            return out
     else:
         return f"Error: Agent {name} not found in network"
 
