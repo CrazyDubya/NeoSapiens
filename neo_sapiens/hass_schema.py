@@ -5,7 +5,32 @@ from typing import List
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from swarms import Agent, Anthropic, SwarmNetwork, tool
+# Import from swarms - note: some imports may need adjustment based on current swarms version
+try:
+    from swarms import Agent, tool
+    # Try to import SwarmNetwork and Anthropic - these may not be available in current version
+    try:
+        from swarms import SwarmNetwork
+    except ImportError:
+        print("Warning: SwarmNetwork not available in current swarms version")
+        SwarmNetwork = None
+    
+    try:
+        from swarms import Anthropic
+    except ImportError:
+        print("Warning: Anthropic not available in current swarms version")
+        # Try alternative import for Anthropic
+        try:
+            from swarms.models import Anthropic
+        except ImportError:
+            print("Warning: Anthropic model not found, using placeholder")
+            Anthropic = None
+except ImportError as e:
+    print(f"Error importing from swarms: {e}")
+    Agent = None
+    tool = None
+    SwarmNetwork = None
+    Anthropic = None
 
 from neo_sapiens.few_shot_prompts import (
     data,
@@ -27,8 +52,12 @@ from neo_sapiens.tools_preset import (
 # Load environment variables
 load_dotenv()
 
-# Swarmnetowr
-network = SwarmNetwork(api_enabled=True, logging_enabled=True)
+# Initialize SwarmNetwork only if available
+if SwarmNetwork and callable(SwarmNetwork):
+    network = SwarmNetwork(api_enabled=True, logging_enabled=True)
+else:
+    network = None
+    print("Warning: SwarmNetwork not available or not callable - agent pooling disabled")
 
 
 # def tool_router(tool: str, *args, **kwargs):
@@ -48,9 +77,11 @@ def find_agent_id_by_name(name: str):
     Returns:
         str: The ID of the agent.
     """
-    for agent in network.agent_pool:
-        if agent.agent_name == name:
-            return agent.id
+    if network and hasattr(network, 'agent_pool'):
+        for agent in network.agent_pool:
+            if agent.agent_name == name:
+                return agent.id
+    return None
 
 
 class ToolSchema(BaseModel):
@@ -187,6 +218,10 @@ def create_worker_agents(
         List[Agent]: The initialized Agent objects.
 
     """
+    if not Agent:
+        logger.error("Agent class not available - cannot create agents")
+        return []
+        
     agent_list = []
     for agent in agents:
         name = agent.name
@@ -197,12 +232,19 @@ def create_worker_agents(
             f" {system_prompt}"
         )
 
+        # Create agent with available LLM
+        llm = None
+        if Anthropic:
+            llm = Anthropic(
+                anthropic_api_key=os.getenv("ANTHROPIC_API_KEY")
+            )
+        else:
+            logger.warning("Anthropic not available - using default LLM")
+
         out = Agent(
             agent_name=name,
             system_prompt=system_prompt,
-            llm=Anthropic(
-                anthropic_api_key=os.getenv("ANTHROPIC_API_KEY")
-            ),
+            llm=llm,
             max_loops=1,
             autosave=True,
             dashboard=False,
@@ -211,7 +253,8 @@ def create_worker_agents(
             tools=[browser, terminal, create_file, file_editor],
         )
 
-        network.add_agent(out)
+        if network:
+            network.add_agent(out)
         agent_list.append(out)
 
     return agent_list
@@ -231,16 +274,26 @@ def create_agents_by_boss(team: str = None, *args, **kwargs):
         str: The output of the agent run.
 
     """
+    if not Agent:
+        return "Error: Agent class not available"
+        
     system_prompt_daddy = orchestrator_prompt_agent(team)
+
+    # Create agent with available LLM
+    llm = None
+    if Anthropic:
+        llm = Anthropic(
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            max_tokens=4000,
+        )
+    else:
+        logger.warning("Anthropic not available - using default LLM")
 
     # Create the agents
     agent = Agent(
         agent_name="Swarm Orchestrator",
         system_prompt=system_prompt_daddy,
-        llm=Anthropic(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            max_tokens=4000,
-        ),
+        llm=llm,
         max_loops=1,
         autosave=True,
         dashboard=False,
@@ -272,10 +325,16 @@ def send_task_to_network_agent(name: str, task: str):
     Returns:
         str: The response from the agent.
     """
+    if not network:
+        return f"Error: SwarmNetwork not available - cannot send task to {name}"
+        
     logger.info(f"Adding agent {name} as a tool")
     agent_id = find_agent_id_by_name(name)
-    out = network.run_single_agent(agent_id, task)
-    return out
+    if agent_id:
+            out = network.run_single_agent(agent_id, task)
+            return out
+    else:
+        return f"Error: Agent {name} not found in network"
 
 
 def build_swarm(team_task: str, task: str, *args, **kwargs):
@@ -283,27 +342,38 @@ def build_swarm(team_task: str, task: str, *args, **kwargs):
     Master function to create agents based on a task.
 
     Args:
+        team_task (str): The team task description.
         task (str): The task to be executed.
 
     Returns:
-        None
+        str: The output from the swarm execution.
     """
+    if not Agent:
+        return "Error: Agent class not available"
+        
+    # Create agent with available LLM
+    llm = None
+    if Anthropic:
+        llm = Anthropic(
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            max_tokens=4000,
+        )
+    else:
+        logger.warning("Anthropic not available - using default LLM")
+    
     # Call the agents [ Main Agents ]
     boss = Agent(
         agent_name="Swarm Orchestrator",
         system_prompt=boss_sys_prompt,
-        llm=Anthropic(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            max_tokens=4000,
-        ),
+        llm=llm,
         max_loops="auto",
         autosave=True,
         dashboard=False,
         verbose=True,
         interactive=True,
         stopping_token="<DONE>",
-        tools=[create_agents_by_boss, send_task_to_network_agent]
-        * args,
+        tools=[create_agents_by_boss, send_task_to_network_agent],
+        *args,
         **kwargs,
     )
 
@@ -313,6 +383,9 @@ def build_swarm(team_task: str, task: str, *args, **kwargs):
     json_agentic_output = out
     # logger.info(f"Output: {out}")
     out = parse_json_from_input(out)
+    if out[0] is None:  # Check if parsing failed
+        return "Error: Failed to parse agent creation output"
+        
     plan, agents = out
 
     # Task 2: Print agent names and create agents
@@ -341,10 +414,14 @@ def run_swarm(
     Run a task using the Swarm Orchestrator agent.
 
     Args:
+        team_task (str): The team task description. 
         task (str): The task to be executed.
 
     Returns:
-        None
+        str: The output from the swarm execution.
     """
+    if not team_task or not task:
+        return "Error: Both team_task and task parameters are required"
+        
     out = build_swarm(team_task, task, *args, **kwargs)
     return out
